@@ -1,18 +1,39 @@
-Show graphic dependency tree between Debian packages.
-
-## The problem
-
-While installing a package in Debian Linux, the package manager might want to pull in some seemingly unrelated packages. The output of apt tools only shows a list of packages to be installed but doesn't show why these packages are included.
-
-## The solution
-
-This program will show a graphic dependency tree between the packages to be installed, so you can know why a package is included? Is it a strict dependant, or it's just optional?
-
 ## Usage
 
-Download the source, install the python `graphviz` and `python-apt` packages. Then run
+Download the source, install the python pacakges `graphviz` and `python-apt`. Then run
     
-    python src/main.py package_name
+    python src/main.py package_1 pacakge_2
     
-Note: if you can't install the `python-apt` package via `pip`, there is a system package that can be installed using apt.
+It will show a graphic dependency tree of the pacakges that needs to be installed.
 
+
+## Why It is Useful
+
+Sometimes when installing a package (target package) in Debian Linux, the
+package manager might want to pull in some seemingly unrelated packages
+(suprising depends). This tool helps the user to understand why such a package
+is included.
+
+By looking at the dependency tree, we can see the dependency chain from the `target
+package` to the `suprising depends` and other information like wether it is a
+strict dependant, or it's just optional one?
+
+## Difference From Similar tools
+
+* The `why` command of `apt-get`
+
+  The `why` command shows why a pacakge would be installed, but there are two
+  differences:
+
+  1. It shows why a package would be installed as dependencies of any **already
+      installed** pacakge.
+
+  2. It only shows **one** dependency chain between the packages that installed
+      pacakge and the given one.
+
+* debtree
+
+  Debtree generates a dot file that includes **all** dependencies of a given
+  package, regardless wether they are installed or not. This results in a very
+  complex graph, and it's hard to see which *new* packages will be installed and
+  why.

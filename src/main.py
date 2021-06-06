@@ -16,14 +16,27 @@ def parse_pkg_spec(line):
         return None
     (_, pkg_name, version, distribution, arch) = items
     return (pkg_name, version[1:], distribution, arch[1:-1])
+
+def what_apt_want(pkgs):
+    return [parse_pkg_spec(line)[0] for line in install_command_output(pkgs)]
     
-DEP_VALUE = {
+DEP_LEVEL = {
     'Depends': 2, 'PreDepends': 2, 'Recommends': 1, 'Suggests': 0
 }
 
 SUG = 0
 REC = 1
 DEP = 2
+PKG_SHAPE = {SUG: 'octagon', REC: 'box', DEP: 'oval'}
+
+edge_style = {
+    #'Depends': 
+    DEP: {'style': 'solid'}, 'PreDepends': {'style':'solid'}, 
+    #'Recommends': 
+    REC: {'style':'dashed', 'color': 'gray'},
+    #'Suggests':
+    SUG: {'style':'dotted', 'color': 'gray'}
+}
 
 def build_dep_map(pkgs):
     repo = apt.Cache()
@@ -31,89 +44,102 @@ def build_dep_map(pkgs):
     pkg_set = set(pkgs)
     for pname in reversed(pkgs):
         pkg = repo[pname].candidate
-        for dep_type in ['Depends', 'PreDepends', 'Recommends', 'Suggests']:
+        for dep_type, dep_level in DEP_LEVEL.items():
             depends = pkg.get_dependencies(dep_type)
             for entry in depends:
                 for alternative in entry:
                     if alternative.name in pkg_set:
-                        dep_map.setdefault(pname, {})[alternative.name] = dep_type
+                        dep_map.setdefault(pname, {})[alternative.name] = dep_level
     return dep_map
     
-def build_pkg_type_map(dep_map, starts):
+def build_pkg_level_map(dep_map, starts):
     """For the packages in dep_map, determine their "dependency type".
     
-    The "dependency type" of package can be "depends", "recommends", or "suggests".
+    Debian pacakges have a few kinds of dependency: Depends, Recommends, and Suggests,
+    which defines different "importance" levels of the dependencies for their parent pacakge.
+    
+    The "importance level" of a package can be DEP, REC, or SUG, DEP > REC > SUG.
+    Rules to decide the level of a package:
+    1. Packages in starts has type DEP.
+    2. If a package has type DEP, then all its depends has type DEP.
+    3. The recommends of a pacakge has importance level REC.
+    4. The suggests of a pacakge has importance level SUG.
+    5. If a package is required by multiple packages, its level is maximum of the levels it get from
+    its parent packages. For example, if both A, B has level DEP, A depends on C, and B recommends C,
+    then C get level DEP from A and level REC from B, so C's level is DEP. 
     """
-    pkg_type_map = {pkg: DEP for pkg in starts}
+    # This is basically a BFS.
+    
+    pkg_level_map = {pkg: DEP for pkg in starts}
     change_set = set(starts)
     while change_set:
         new_change_set = set()
         for pkg in change_set:
-            pkg_type = pkg_type_map[pkg]
-            for dep_pkg, dep_type in dep_map.get(pkg, {}).items():
-                dep_value = DEP_VALUE[dep_type]
-                type_from_path = min(pkg_type, dep_value)
-                if dep_pkg not in pkg_type_map:
+            pkg_type = pkg_level_map[pkg]
+            for dep_pkg, dep_level in dep_map.get(pkg, {}).items():
+                dep_level_from_path = min(pkg_type, dep_level)
+                if dep_pkg not in pkg_level_map: # never got a level before
                     new_change_set.add(dep_pkg)
-                    pkg_type_map[dep_pkg] = type_from_path
+                    pkg_level_map[dep_pkg] = dep_level_from_path
                 else:
-                    if type_from_path > pkg_type_map[dep_pkg]:
+                    if dep_level_from_path > pkg_level_map[dep_pkg]: # got a higher level
                         new_change_set.add(dep_pkg)
-                        pkg_type_map[dep_pkg] = type_from_path
+                        pkg_level_map[dep_pkg] = dep_level_from_path
         change_set = new_change_set
-    return pkg_type_map
+    return pkg_level_map
 
-edge_style = {
-    'Depends': 'solid', 'PreDepends': 'solid', 'Recommends': 'dashed', 'Suggests': 'tapered'
-}
 
-def render_depend_graph(depend_map, pkg_type_map, comment):
+def render_depend_graph(depend_map, pkg_level_map, comment):
     graph = Digraph(comment = comment)
     graph.attr(rankdir="LR")
     nodes = set()
-    SHAPE = {0: 'polygon', 1: 'box', 2: 'oval'}
+
     def get_node(name):
+        "create a node for `name` if needed."
         if name not in nodes:
-            graph.node(name, shape = SHAPE[pkg_type_map[name]])
+            graph.node(name, shape = PKG_SHAPE[pkg_level_map[name]])
             nodes.add(name)
         return name
 
     for p, deps in depend_map.items():
-        for dp, dep_type in deps.items():
+        for dp, dep_level in deps.items():
             p = get_node(p)
             dp = get_node(dp)
-            # graph.attr(style=edge_style[dep_type])
-            graph.edge(p, dp, style=edge_style[dep_type])
+            graph.edge(p, dp, **edge_style[dep_level])
     return graph
     
 def legend_graph():
+    "Generate a subgraph that shows the legends."
     node_idx = 0
-    def make_edge(label, n2_style, edge_style):
+    def make_edge(label, n2_style):
         nonlocal node_idx
         n1, n2 = str(node_idx), str(node_idx+1)
         legends.node(n1, label="package_1")
         legends.node(n2, label="package_2", **n2_style)
-        legends.edge(n1, n2, label=label, **edge_style)
+        legends.edge(n1, n2, label=label, **edge_style[DEP_LEVEL[label]])
         node_idx += 2
+        return n1, n2
     legends = Digraph(name="cluster_0", comment="legends")
     legends.attr(label="Legends", shape="rectangle")
     legends.attr(rankdir="LR")
-    legends.node("dp", "Required Pakage", shape='oval')
-    legends.node("op", "Optional Package", shape="box")
-    legends.edge("dp", "op", style="invis")
-    make_edge("Depends", {'shape':"oval"}, {'style':'solid'})
-    make_edge("Recommends", {'shape':"box"}, {'style':edge_style['Recommends']})
-    make_edge("Suggests", {'shape':"box"}, {'style':edge_style['Suggests']})
+    legends.node('sp', "Suggested Package", shape=PKG_SHAPE[SUG])
+    legends.node("dp", "Required Pakage", shape=PKG_SHAPE[DEP])
+    legends.node("rp", "Optional Package", shape=PKG_SHAPE[REC])
+    legends.edge("sp", "rp", style="invis")
+    legends.edge("rp", "dp", style="invis")
+    d1, d2 = make_edge("Depends", {'shape':PKG_SHAPE[DEP]})
+    r1, r2 = make_edge("Recommends", {'shape':PKG_SHAPE[REC]})
+    s1, s2 = make_edge("Suggests", {'shape':PKG_SHAPE[SUG]})
+    legends.body.append(f"{{rank=min;sp;{d1};{r1};{s1}}}")
+    legends.body.append(f'{{rank=max;dp;{d2};{r2};{s2}}}')
     return legends
     
 if __name__ == '__main__':
     import sys
     starts = sys.argv[1:]
-    output = install_command_output(starts)
-    pkgs = [parse_pkg_spec(line)[0] for line in output]
+    pkgs = what_apt_want(starts)
     dep_map = build_dep_map(pkgs)
-    pkg_type_map = build_pkg_type_map(dep_map, starts)
+    pkg_type_map = build_pkg_level_map(dep_map, starts)
     graph = render_depend_graph(dep_map, pkg_type_map, "Dependency graph")
     graph.subgraph(legend_graph())
-    # graph = graph.unflatten(stagger=10)
     graph.view()
